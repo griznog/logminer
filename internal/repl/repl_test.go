@@ -2,6 +2,7 @@ package repl
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -573,5 +574,84 @@ func TestRunPrompts(t *testing.T) {
 	}
 	if got, want := out.String(), "> 6\n> "; got != want {
 		t.Errorf("output = %q, want %q", got, want)
+	}
+}
+
+func TestExec(t *testing.T) {
+	jeffUploads := recordHeader + "\n" +
+		"Wed Apr 15 01:00:00 UTC 2020,jeff22,upload,60\n" +
+		"Wed Apr 15 02:00:00 UTC 2020,jeff22,upload,10\n"
+	tests := []struct {
+		name  string
+		line  string
+		quiet bool
+		want  string
+	}{
+		{"count", "count op=upload AND size>50", false, "2\n"},
+		{"count quiet", "count op=upload AND size>50", true, "2\n"},
+		{"users quiet", "users", true, "3\n"},
+		{"ops quiet", "ops", true, "2\n"},
+		{"users list", "users list", false, "Maia86\njeff22\nsarah94\n"},
+		{"users list quiet", "users list", true, "Maia86\njeff22\nsarah94\n"},
+		{"users list empty", "users list user=nobody", false, "(none)\n"},
+		{"users list empty quiet", "users list user=nobody", true, ""},
+		{"ops list empty quiet", "ops list user=nobody", true, ""},
+		{"select", "select user=jeff22 AND op=upload AND date=2020-04-15", false, jeffUploads + "2 records\n"},
+		{"select quiet", "select user=jeff22 AND op=upload AND date=2020-04-15", true, jeffUploads},
+		{"select empty", "select user=nobody", false, "0 records\n"},
+		{"select empty quiet", "select user=nobody", true, recordHeader + "\n"},
+		{"help", "help", true, helpText},
+		{"quit is a no-op", "quit", true, ""},
+		{"exit is a no-op", "exit", false, ""},
+		{"blank line", "   ", true, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := Exec(&out, testEvents(), tt.line, Options{Quiet: tt.quiet}); err != nil {
+				t.Fatalf("Exec returned error: %v", err)
+			}
+			if got := out.String(); got != tt.want {
+				t.Errorf("output = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExecErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		msg  string // first line of FormatError, or "" to check only the prefix
+		help string // help text FormatError must append
+	}{
+		{"unknown command", "frob", "error: unknown command \"frob\" (type \"help\" for usage)\n", ""},
+		{"plain error", "count op=bogus", "error: invalid op \"bogus\": want upload or download\n", ""},
+		{"syntax error", "count op=upload size>50", "", logicHelpText},
+		{"date error", "count date=04/15/2020", "error: invalid date \"04/15/2020\": want YYYY-MM-DD\n", dateHelpText},
+		{"size error", "count size>abc", "error: invalid size \"abc\": want an integer number of kB\n", sizeHelpText},
+	}
+	for _, tt := range tests {
+		for _, quiet := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/quiet=%v", tt.name, quiet), func(t *testing.T) {
+				var out bytes.Buffer
+				err := Exec(&out, testEvents(), tt.line, Options{Quiet: quiet})
+				if err == nil {
+					t.Fatalf("Exec(%q) returned nil error", tt.line)
+				}
+				if out.Len() != 0 {
+					t.Errorf("Exec wrote %q on error, want nothing", out.String())
+				}
+				got := FormatError(err)
+				line, help, _ := strings.Cut(got, "\n")
+				line += "\n"
+				if !strings.HasPrefix(line, "error: ") || (tt.msg != "" && line != tt.msg) {
+					t.Errorf("FormatError first line = %q, want %q", line, tt.msg)
+				}
+				if help != tt.help {
+					t.Errorf("FormatError help = %q, want %q", help, tt.help)
+				}
+			})
+		}
 	}
 }

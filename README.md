@@ -40,7 +40,7 @@ An interactive Go program (standard library only) that loads a server log once a
 ## Usage
 
 ```
-go run . [-file server_log.csv]
+go run . [--file server_log.csv]
 > users                                                 # Q1: distinct users           -> 6
 > count op=upload AND size>50                           # Q2: uploads larger than 50 kB -> 140
 > count user=jeff22 AND op=upload AND date=2020-04-15   # Q3: jeff22 uploads on Apr 15 -> 3
@@ -66,6 +66,20 @@ Dates compare whole calendar days: `date<=2020-04-15` includes all of Apr 15, `d
 
 Run the tests with `go vet ./... && go test ./...`.
 
+### Scripting
+
+`--query` runs one command, in exactly the prompt's syntax, prints the result and exits; `--file -` reads the log from standard input (and so needs `--query`, since the prompt also reads standard input):
+
+```
+go run . --query "count op=upload AND size>50"                     # 140
+cat server_log.csv | go run . --file - --query "users list"        # one username per line
+go run . --query "select user=jeff22 AND date=2020-04-15" | cut -d, -f1
+```
+
+Query mode prints only the result, so it can feed other tools: no banner, prompt or load summary; `users list` and `ops list` print nothing (not `(none)`) when empty; `select` prints the CSV header and the matching records without the `N records` footer, so its output is valid CSV (just the header if nothing matches). Errors print `error: ...` and the same help text as the prompt to standard error, with nothing on standard output.
+
+Exit codes: `0` success; `1` a bad query, or a log that cannot be read or parsed; `2` a usage error (an unknown flag, an empty `--query`, or `--file -` without `--query`).
+
 ### Line editing and history
 
 The standard library has no readline, so the prompt itself is plain `bufio` input with no arrow-key editing or history. To get both without changing the code or adding a dependency, wrap the program with `rlwrap`:
@@ -81,11 +95,11 @@ rlwrap go run .
 | `internal/logparse` | Parses the CSV into `[]Event` (`encoding/csv`, `time.UnixDate` timestamps). Errors carry line numbers. |
 | `internal/query` | Composable `Filter` functions (including `Date(cmp, y, m, d)`, of which `OnDate` is the `Eq` case, and `Size(cmp, kb)`, of which `SizeOver` is the `Gt` case, sharing one `Cmp` enum), the combinators `And`, `Or` and `Not`, plus `Count`, `Select`, `DistinctUsers`, `UniqueUsers` and `UniqueOps` (the last three share one generic set-building helper); one pass over the events per query. |
 | `internal/repl` | Reads commands from an `io.Reader`, writes to an `io.Writer` (so it is easy to test). `expr.go` is a small recursive-descent parser that turns a filter expression into a tree and then a single `query.Filter` built with `And`/`Or`/`Not`. Before parsing, a pre-pass joins adjacent tokens around comparison operators (`45`, `<=`, `size` becomes `45<=size`) but never swallows parentheses or `AND`/`OR`/`NOT`. A chained comparison is desugared into an `AND` node of two ordinary field-first terms. The date and size terms of each `AND` chain are also folded into inclusive lower/upper bounds (days, or whole kB) so an empty range is reported instead of silently matching nothing. |
-| `main.go` | Flag handling, file loading, starts the REPL. |
+| `main.go` | Flag handling and log loading (a file, or standard input with `--file -`), then either one `--query` through `repl.Exec` or the interactive `repl.Run`. All in `run(args, stdin, stdout, stderr) int`, which returns the exit code, so it is tested without a process. |
 
 New questions usually mean adding a filter constructor and one case in `parseTerm`, with no changes to the parser or the counting code.
 
-Date and size ranges need no special filter: each term is its own `query.Date` or `query.Size` filter, ANDed like any other, and a chain is just two such terms. The range check only looks at the direct date and size operands of one `AND` chain (nested `AND` groups and chains are flattened into it); a term under `NOT` or across an `OR` does not narrow the chain, so it is never wrongly rejected. Errors are typed (`syntaxError`, `dateError`, `sizeError`) so `Run` can append the matching help text with `errors.As`; other invalid terms print just the error. `select` re-renders records with `time.UnixDate`, so its output parses back with the same loader.
+Date and size ranges need no special filter: each term is its own `query.Date` or `query.Size` filter, ANDed like any other, and a chain is just two such terms. The range check only looks at the direct date and size operands of one `AND` chain (nested `AND` groups and chains are flattened into it); a term under `NOT` or across an `OR` does not narrow the chain, so it is never wrongly rejected. Each line is dispatched by `repl.Exec`, shared by the prompt and `--query`; `Options.Quiet` selects the script-friendly output. Errors are typed (`syntaxError`, `dateError`, `sizeError`) so `FormatError` can append the matching help text with `errors.As`; other invalid terms print just the error. The prompt prints that to standard output, `--query` to standard error. `select` re-renders records with `time.UnixDate`, so its output parses back with the same loader.
 
 Complexity: loading is O(n); each query is O(n) time (`select` also O(m) space for the m matches), plus O(u) space for distinct values; `users list` and `ops list` add an O(u log u) sort of the u distinct values.
 

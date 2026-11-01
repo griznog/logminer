@@ -94,6 +94,14 @@ an error, e.g. size>50 AND size<51.
 // recordHeader is the CSV header written by "select", matching the input log.
 const recordHeader = "timestamp,username,operation,size"
 
+// Options controls how Exec formats results.
+type Options struct {
+	// Quiet selects script-friendly output: "select" omits its "N records"
+	// footer (and always prints the header), and an empty list prints
+	// nothing instead of "(none)".
+	Quiet bool
+}
+
 // Run reads commands from in, writes prompts and results to out, and answers
 // each command against events. It returns nil on "quit", "exit" or end of
 // input. Invalid commands are reported to out and do not stop the loop; only
@@ -106,61 +114,86 @@ func Run(in io.Reader, out io.Writer, events []logparse.Event) error {
 			fmt.Fprintln(out)
 			return sc.Err()
 		}
-		fields := strings.Fields(sc.Text())
-		if len(fields) == 0 {
-			continue
-		}
-		cmd, args := fields[0], fields[1:]
-		switch cmd {
-		case "quit", "exit":
+		line := sc.Text()
+		if fields := strings.Fields(line); len(fields) > 0 && (fields[0] == "quit" || fields[0] == "exit") {
 			return nil
-		case "help":
-			fmt.Fprint(out, helpText)
-		case "users", "ops", "count", "select":
-			list := cmd != "count" && len(args) > 0 && args[0] == "list"
-			if list {
-				args = args[1:]
-			}
-			filter, err := parseFilters(args)
-			if err != nil {
-				fmt.Fprintf(out, "error: %v\n", err)
-				var de *dateError
-				var ze *sizeError
-				var se *syntaxError
-				switch {
-				case errors.As(err, &de):
-					fmt.Fprint(out, dateHelpText)
-				case errors.As(err, &ze):
-					fmt.Fprint(out, sizeHelpText)
-				case errors.As(err, &se):
-					fmt.Fprint(out, logicHelpText)
-				}
-				continue
-			}
-			switch {
-			case cmd == "select":
-				printRecords(out, query.Select(events, filter))
-			case cmd == "count":
-				fmt.Fprintln(out, query.Count(events, filter))
-			case cmd == "users" && list:
-				printList(out, query.UniqueUsers(events, filter))
-			case cmd == "users":
-				fmt.Fprintln(out, query.DistinctUsers(events, filter))
-			case list:
-				printList(out, query.UniqueOps(events, filter))
-			default:
-				fmt.Fprintln(out, len(query.UniqueOps(events, filter)))
-			}
-		default:
-			fmt.Fprintf(out, "error: unknown command %q (type \"help\" for usage)\n", cmd)
+		}
+		if err := Exec(out, events, line, Options{}); err != nil {
+			fmt.Fprint(out, FormatError(err))
 		}
 	}
 }
 
-// printList writes each value on its own line, or "(none)" when vals is empty
-// so that an empty result is distinguishable from no output.
-func printList[T ~string](out io.Writer, vals []T) {
-	if len(vals) == 0 {
+// Exec runs one command line, in the same syntax as a line typed at the
+// prompt, against events and writes its result to out. A blank line, "quit"
+// and "exit" do nothing. An invalid command writes nothing and returns an
+// error; FormatError renders it for the user.
+func Exec(out io.Writer, events []logparse.Event, line string, opts Options) error {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return nil
+	}
+	cmd, args := fields[0], fields[1:]
+	switch cmd {
+	case "quit", "exit":
+		return nil
+	case "help":
+		fmt.Fprint(out, helpText)
+		return nil
+	case "users", "ops", "count", "select":
+	default:
+		return fmt.Errorf("unknown command %q (type \"help\" for usage)", cmd)
+	}
+	list := cmd != "count" && len(args) > 0 && args[0] == "list"
+	if list {
+		args = args[1:]
+	}
+	filter, err := parseFilters(args)
+	if err != nil {
+		return err
+	}
+	switch {
+	case cmd == "select":
+		printRecords(out, query.Select(events, filter), opts.Quiet)
+	case cmd == "count":
+		fmt.Fprintln(out, query.Count(events, filter))
+	case cmd == "users" && list:
+		printList(out, query.UniqueUsers(events, filter), opts.Quiet)
+	case cmd == "users":
+		fmt.Fprintln(out, query.DistinctUsers(events, filter))
+	case list:
+		printList(out, query.UniqueOps(events, filter), opts.Quiet)
+	default:
+		fmt.Fprintln(out, len(query.UniqueOps(events, filter)))
+	}
+	return nil
+}
+
+// FormatError renders an error returned by Exec as an "error: ..." line,
+// followed by the help text for the kind of mistake: the expression syntax
+// guide for a syntax error, or the date or size filter guide for a bad date
+// or size term. Other errors get no help text.
+func FormatError(err error) string {
+	msg := fmt.Sprintf("error: %v\n", err)
+	var de *dateError
+	var ze *sizeError
+	var se *syntaxError
+	switch {
+	case errors.As(err, &de):
+		msg += dateHelpText
+	case errors.As(err, &ze):
+		msg += sizeHelpText
+	case errors.As(err, &se):
+		msg += logicHelpText
+	}
+	return msg
+}
+
+// printList writes each value on its own line. When vals is empty it writes
+// "(none)", so that an empty result is distinguishable from no output, unless
+// quiet is set, in which case it writes nothing.
+func printList[T ~string](out io.Writer, vals []T, quiet bool) {
+	if len(vals) == 0 && !quiet {
 		fmt.Fprintln(out, "(none)")
 		return
 	}
@@ -171,13 +204,17 @@ func printList[T ~string](out io.Writer, vals []T) {
 
 // printRecords writes events in the input CSV format: a header line, one
 // line per event, then a "N records" summary. With no events, only the
-// summary "0 records" is written.
-func printRecords(out io.Writer, events []logparse.Event) {
-	if len(events) > 0 {
+// summary "0 records" is written. When quiet is set the output is plain CSV:
+// the header is always written and the summary never is.
+func printRecords(out io.Writer, events []logparse.Event, quiet bool) {
+	if len(events) > 0 || quiet {
 		fmt.Fprintln(out, recordHeader)
-		for _, ev := range events {
-			fmt.Fprintln(out, formatRecord(ev))
-		}
+	}
+	for _, ev := range events {
+		fmt.Fprintln(out, formatRecord(ev))
+	}
+	if quiet {
+		return
 	}
 	noun := "records"
 	if len(events) == 1 {
