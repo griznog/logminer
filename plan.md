@@ -2,57 +2,55 @@
 
 ## Context
 Interview challenge: an interactive Go program that answers admin questions about `server_log.csv` (657 events, 6 users, UTC, all rows well-formed). It must answer:
-1. How many users accessed the server?
-2. How many uploads were larger than 50kB?
-3. How many times did `jeff22` upload on April 15th, 2020?
+1. How many users accessed the server? (6)
+2. How many uploads were larger than 50kB? (140)
+3. How many times did `jeff22` upload on April 15th, 2020? (3)
 
-It should also handle combinations of these. Graded on clean, documented, efficient, extensible code (~1-2h).
+It should also handle combinations of these. Graded on clean, documented, efficient, extensible code (~1-2h originally; the scope below grew at the user's direction).
 
-**Scope decision:** the schema is fixed (`timestamp, username, operation, size`). Arbitrary column counts and type inference are deliberately deferred (see Future improvements): inference adds complexity and bug surface, and needs an extra pass over large files.
+**Scope decision:** the schema is fixed (`timestamp, username, operation, size`). Arbitrary column counts and type inference are deferred (see Future improvements): inference adds complexity and bug surface, and needs an extra pass over large files. The program stays standard-library only.
 
-## Design
-Load once into memory as `[]Event`, then answer each query with a single filtered pass. Queries are composable filters rather than three hardcoded functions, which covers "combinations" and is the extensibility story.
+## Design (as built)
+Load once into memory as `[]Event`, then answer each query with a single filtered pass. A query is a boolean expression compiled into one `query.Filter` (`func(Event) bool`).
 
-Layout (stdlib only, `go mod init logmetrics`):
+Layout (`go mod init logmetrics`):
 - `main.go`: `-file` flag (default `server_log.csv`), load the log, start the REPL.
-- `internal/logparse/`
-  - `Event{Time time.Time; User string; Op Operation; SizeKB int}`; `Operation` is `upload|download`.
-  - `Parse(io.Reader) ([]Event, error)` using `encoding/csv`: skip header, `time.Parse(time.UnixDate, ...)`, `strconv.Atoi` for size, reject unknown operations. Errors include line numbers.
+- `internal/logparse/`: `Event{Time, User, Op, SizeKB}`, `Parse(io.Reader)` using `encoding/csv` and `time.UnixDate`. Errors include line numbers.
 - `internal/query/`
-  - `Filter = func(Event) bool`; constructors `ByUser`, `ByOp`, `SizeOver(kb)`, `OnDate(y, m, d)`.
-  - `Count(events, ...Filter) int`, `DistinctUsers(events, ...Filter) int`.
-- `internal/repl/`: reads from `io.Reader`, writes to `io.Writer` (testable). Commands:
-  - `users [filters]`: distinct user count
-  - `count [filters]`: matching event count
-  - filters: `user=<name>`, `op=upload|download`, `size>50`, `date=YYYY-MM-DD`
-  - `help`, `quit`
-  - Q1 `users`; Q2 `count op=upload size>50`; Q3 `count user=jeff22 op=upload date=2020-04-15`.
-- Tests (table-driven): parser (header, bad timestamp, bad size, bad op, wrong field count), each filter, REPL commands and error messages, plus an integration test on `server_log.csv` asserting the three answers.
-- `README.md`: rewrite to describe the solution, usage, assumptions, and the Future improvements below. The zip is a duplicate of the inputs; ask whether to remove or gitignore it.
+  - Leaf filters: `ByUser`, `ByOp`, `Size(cmp, kb)`, `Date(cmp, y, m, d)`, with a shared `Cmp` enum (`Eq, Lt, Le, Gt, Ge`). `SizeOver` and `OnDate` remain as thin wrappers.
+  - Combinators: `And`, `Or`, `Not`.
+  - Queries: `Count`, `DistinctUsers`, `UniqueUsers`, `UniqueOps`, `Select`.
+- `internal/repl/`
+  - `repl.go`: the command loop (`Run(io.Reader, io.Writer, events)`) and help texts.
+  - `expr.go`: tokenizer, comparison-merging pre-pass, recursive-descent parser, and range validation.
+  - Commands: `users [list]`, `ops [list]`, `count`, `select`, `help`, `quit`. Each takes an optional filter expression; an empty expression matches everything.
 
-## Execution
-Implementation is delegated to cheaper Opus subagents (`model: "opus"`), each with a self-contained prompt; I review and verify in the main session.
-1. Agent A: `go mod init`, `internal/logparse` plus tests.
-2. Agent B (after A, since it needs `Event`): `internal/query` plus tests.
-3. Agent C (after B): `internal/repl`, `main.go`, and the integration test.
-4. Main session: review the diffs, run `go vet` and `go test`, run the Verification commands, then write the README.
+## Query language
+- Leaves: `user=<name>`, `op=upload|download`, `size<op>N`, `date<op>YYYY-MM-DD`, where `<op>` is `=`, `<`, `<=`, `>`, `>=`.
+- Chained ranges: `45 <= size < 100`, `2020-04-13 <= date <= 2020-04-15`. They desugar to two ANDed leaves, and both operators must point the same way.
+- Operators, tightest first: parentheses, `NOT`, `AND`, `OR`. Keywords are case-insensitive. **AND is required** between terms; adjacent terms are an error.
+- Dates compare whole calendar days in the timestamp's own zone. Sizes are whole kB.
+- Range validation: each AND chain is checked on its own (nested ANDs flattened; terms under `OR`/`NOT` are not combined). If no day (or whole kB) satisfies the combined bounds, the query is rejected with the error and the matching date or size help text. Syntax errors print the logic help; other errors print no help.
+- `select` prints matching records in the input CSV format, followed by `N records`.
 
-## Assumptions to document
-- "Larger than 50kB" means strictly `> 50` (size is an integer in kB).
-- Date match uses the timestamp's own zone (all UTC in the sample).
-- Date input format is `YYYY-MM-DD`.
-- Complexity: O(n) load, O(n) per query, O(u) space for distinct users.
+## Process
+Implementation was delegated in chunks to cheaper Opus subagents (parser, queries, REPL, `list`, dates and `select`, boolean expressions, chained ranges). Each chunk was reviewed and re-verified in the main session with `gofmt`, `go vet`, `go test` and shell cross-checks. Changes are committed as they are made; nothing is pushed without the user's say-so.
 
-## Future improvements (for README)
-- **Arbitrary columns:** header-driven schema instead of the fixed `Event` struct; filters built from column names at runtime.
-- **Type inference:** the stdlib has no such helper (`encoding/csv` returns only strings). It would be hand-built from `strconv.ParseInt`/`ParseFloat`/`ParseBool` and `time.Parse` over candidate layouts. It is heuristic (zip codes become ints) and costs an extra pass, so sampling or a user-supplied schema file would be preferable for large data.
-- Streaming parse and per-user/per-day indexes for very large logs.
-- Aggregates (sum/avg/min/max, group-by), `AND`/`OR`, and ranges.
-- readline/history in the REPL, timezone handling, malformed-row policy (skip and report), lint/CI.
+## Assumptions
+- "Larger than 50kB" means strictly `> 50`.
+- Usernames are matched case-sensitively; dates are entered as `YYYY-MM-DD`.
+- A malformed row fails the load with its line number instead of being skipped.
+- Complexity: O(n) load, O(n) per query, O(u log u) extra when listing distinct values.
+
+## Future improvements (also in README)
+- **Arbitrary columns:** header-driven schema instead of the fixed `Event` struct, with filters built from column names at runtime.
+- **Type inference:** the stdlib has no helper (`encoding/csv` returns only strings). It would be hand-built from `strconv` and `time.Parse`; it is heuristic and costs an extra pass, so sampling or a schema file is preferable for large data.
+- Built-in line editing and history (`chzyer/readline`, `peterh/liner`, `golang.org/x/term`); `rlwrap` works today.
+- Streaming parse and per-user or per-day indexes; aggregates (sum/avg/min/max, group-by); explicit time zone handling; skip-and-report for bad rows; lint and CI.
 
 ## Verification
 - `go vet ./... && go test ./...`
-- `go run .`, enter the three queries, and cross-check with shell:
+- `go run .`, enter the three challenge queries, and cross-check with shell:
   - `tail -n +2 server_log.csv | cut -d, -f2 | sort -u | wc -l`
   - `awk -F, '$3=="upload" && $4>50' server_log.csv | wc -l`
   - `grep 'Apr 15' server_log.csv | grep -c 'jeff22,upload'`
