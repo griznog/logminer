@@ -1,0 +1,20 @@
+# Build artifacts
+/logmetrics
+/logminer
+*.exe
+*.test
+*.out
+
+# Test and coverage output
+*.prof
+coverage.*
+
+# Original challenge archive
+*.zip
+
+# Editor and OS files
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
