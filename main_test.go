@@ -52,6 +52,9 @@ func TestRun(t *testing.T) {
 		{"bad query", []string{"--file", "-", "--query", "count op=bogus"}, testLog, 1, "", "error: invalid op \"bogus\""},
 		{"syntax error", []string{"--file", "-", "--query", "count op=upload size>50"}, testLog, 1, "", "error: "},
 		{"date error", []string{"--file", "-", "--query", "count date=4/15"}, testLog, 1, "", "error: invalid date"},
+		{"time range", []string{"--file", "-", "--query", "count 2020-04-15T02:00 <= date < 2020-04-15T04:00"}, testLog, 0, "2\n", ""},
+		{"time empty range", []string{"--file", "-", "--query", "count date>2020-04-15T10:00:00 AND date<2020-04-15T10:00:01"}, testLog, 1, "", "error: empty date range: no moment satisfies"},
+		{"time error", []string{"--file", "-", "--query", "count date>=2020-04-15T25:00"}, testLog, 1, "", "error: invalid date \"2020-04-15T25:00\""},
 		{"unknown command", []string{"--file", "-", "--query", "frob"}, testLog, 1, "", "error: unknown command \"frob\""},
 		{"malformed csv", []string{"--file", "-", "--query", "count"}, "timestamp,username,operation,size\nnot,a,valid,row\n", 1, "", "logminer: stdin:"},
 		{"missing file", []string{"--file", filepath.Join(t.TempDir(), "nope.csv"), "--query", "count"}, "", 1, "", "logminer: open"},
@@ -111,7 +114,8 @@ func TestRunErrorHelp(t *testing.T) {
 		help  string // a line from the expected help text
 	}{
 		{"count op=upload size>50", "Terms combine with AND, OR, NOT and parentheses"},
-		{"count date=4/15", "Date filters compare calendar days"},
+		{"count date=4/15", "Date filters take a day"},
+		{"count date>=2020-04-15T25:00", "Date filters take a day"},
 		{"count size>abc", "Size filters compare whole kB"},
 	}
 	for _, tt := range tests {
@@ -141,6 +145,8 @@ func TestRunChallengeAnswers(t *testing.T) {
 		{"users", "6\n"},
 		{"count op=upload AND size>50", "140\n"},
 		{"count user=jeff22 AND op=upload AND date=2020-04-15", "3\n"},
+		// See internal/repl.TestRunTimeQueries for the shell cross-check.
+		{"count 2020-04-15T09:00 <= date < 2020-04-15T17:00", "15\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.query, func(t *testing.T) {

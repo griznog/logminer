@@ -189,6 +189,121 @@ func TestDateUsesEventZone(t *testing.T) {
 	}
 }
 
+func TestDateBoundarySeconds(t *testing.T) {
+	// The last second of Apr 15 and the first second of Apr 16.
+	last := logparse.Event{Time: time.Date(2020, time.April, 15, 23, 59, 59, 0, time.UTC)}
+	first := logparse.Event{Time: time.Date(2020, time.April, 16, 0, 0, 0, 0, time.UTC)}
+	tests := []struct {
+		name                string
+		f                   Filter
+		wantLast, wantFirst bool
+	}{
+		{"eq", Date(Eq, 2020, time.April, 15), true, false},
+		{"lt", Date(Lt, 2020, time.April, 16), true, false},
+		{"le", Date(Le, 2020, time.April, 15), true, false},
+		{"gt", Date(Gt, 2020, time.April, 15), false, true},
+		{"ge", Date(Ge, 2020, time.April, 16), false, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.f(last); got != tc.wantLast {
+				t.Errorf("filter(23:59:59) = %v, want %v", got, tc.wantLast)
+			}
+			if got := tc.f(first); got != tc.wantFirst {
+				t.Errorf("filter(00:00:00) = %v, want %v", got, tc.wantFirst)
+			}
+		})
+	}
+}
+
+func TestDateTime(t *testing.T) {
+	at := func(h, m, s int) logparse.Event {
+		return logparse.Event{Time: time.Date(2020, time.April, 15, h, m, s, 0, time.UTC)}
+	}
+	target := time.Date(2020, time.April, 15, 10, 0, 0, 0, time.UTC)
+	before, exact, after := at(9, 59, 59), at(10, 0, 0), at(10, 0, 1)
+	tests := []struct {
+		name                     string
+		cmp                      Cmp
+		wantBefore, wantAt, want bool // before, exact and after the target second
+	}{
+		{"eq matches only that second", Eq, false, true, false},
+		{"lt is strict", Lt, true, false, false},
+		{"le includes the second", Le, true, true, false},
+		{"gt is strict", Gt, false, false, true},
+		{"ge includes the second", Ge, false, true, true},
+		{"unknown cmp", Cmp(99), false, false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := DateTime(tc.cmp, target)
+			for _, c := range []struct {
+				name string
+				ev   logparse.Event
+				want bool
+			}{{"09:59:59", before, tc.wantBefore}, {"10:00:00", exact, tc.wantAt}, {"10:00:01", after, tc.want}} {
+				if got := f(c.ev); got != c.want {
+					t.Errorf("DateTime(%d, 10:00:00)(%s) = %v, want %v", tc.cmp, c.name, got, c.want)
+				}
+			}
+		})
+	}
+}
+
+func TestDateTimeDayBoundary(t *testing.T) {
+	last := logparse.Event{Time: time.Date(2020, time.April, 15, 23, 59, 59, 0, time.UTC)}
+	first := logparse.Event{Time: time.Date(2020, time.April, 16, 0, 0, 0, 0, time.UTC)}
+	midnight := time.Date(2020, time.April, 16, 0, 0, 0, 0, time.UTC)
+	if !DateTime(Lt, midnight)(last) || DateTime(Lt, midnight)(first) {
+		t.Error("DateTime(<00:00:00) should accept 23:59:59 the day before and reject 00:00:00")
+	}
+	if DateTime(Gt, midnight.Add(-time.Second))(last) || !DateTime(Gt, midnight.Add(-time.Second))(first) {
+		t.Error("DateTime(>23:59:59) should reject 23:59:59 and accept 00:00:00 the next day")
+	}
+}
+
+func TestDateTimeCount(t *testing.T) {
+	// sample times on Apr 15: 01:00, 09:00, 12:00, 23:00; Apr 14 09:00; Apr 16 00:00.
+	nine := time.Date(2020, time.April, 15, 9, 0, 0, 0, time.UTC)
+	five := time.Date(2020, time.April, 15, 17, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name    string
+		filters []Filter
+		want    int
+	}{
+		{"eq", []Filter{DateTime(Eq, nine)}, 1},
+		{"lt", []Filter{DateTime(Lt, nine)}, 2},
+		{"le", []Filter{DateTime(Le, nine)}, 3},
+		{"gt", []Filter{DateTime(Gt, nine)}, 3},
+		{"ge", []Filter{DateTime(Ge, nine)}, 4},
+		{"working hours", []Filter{DateTime(Ge, nine), DateTime(Lt, five)}, 2},
+		{"mixed with day", []Filter{Date(Eq, 2020, time.April, 15), DateTime(Gt, nine)}, 2},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Count(sample, tc.filters...); got != tc.want {
+				t.Errorf("Count = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDateTimeComparesInstants(t *testing.T) {
+	// 05:00 in UTC-5 is 10:00 UTC: the same instant, whatever the zones.
+	zone := time.FixedZone("UTC-5", -5*60*60)
+	ev := logparse.Event{Time: time.Date(2020, time.April, 15, 5, 0, 0, 0, zone)}
+	target := time.Date(2020, time.April, 15, 10, 0, 0, 0, time.UTC)
+	if !DateTime(Eq, target)(ev) {
+		t.Error("DateTime(=10:00Z) rejected 05:00 UTC-5, the same instant")
+	}
+	if DateTime(Lt, target)(ev) || DateTime(Gt, target)(ev) {
+		t.Error("DateTime(<10:00Z) or (>10:00Z) accepted the same instant")
+	}
+	if !DateTime(Eq, target.In(zone))(logparse.Event{Time: target}) {
+		t.Error("DateTime with a non-UTC target rejected the same instant in UTC")
+	}
+}
+
 func TestSelect(t *testing.T) {
 	tests := []struct {
 		name    string
