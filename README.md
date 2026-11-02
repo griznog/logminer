@@ -35,12 +35,22 @@ The log is represented by a CSV formatted file where column data is ordered: `ti
 
 # Solution
 
-An interactive Go program (standard library only) that loads a server log once and answers questions through a small command prompt.
+`logminer` is a Go program (standard library only) that loads a server log once and answers questions about it, either through an interactive command prompt or, for scripts and pipelines, with a single `--query`.
+
+## Build and run
+
+```
+make build     # builds ./logminer
+make test      # go vet ./... && go test ./...
+make clean     # removes ./logminer and cached test results
+```
+
+`./logminer` and `go run .` are interchangeable below. The module path is still `logmetrics`; only the binary is named `logminer`.
 
 ## Usage
 
 ```
-go run . [--file server_log.csv]
+./logminer [--file server_log.csv]        # or: go run . [--file server_log.csv]
 > users                                                 # Q1: distinct users           -> 6
 > count op=upload AND size>50                           # Q2: uploads larger than 50 kB -> 140
 > count user=jeff22 AND op=upload AND date=2020-04-15   # Q3: jeff22 uploads on Apr 15 -> 3
@@ -64,28 +74,26 @@ Dates compare whole calendar days: `date<=2020-04-15` includes all of Apr 15, `d
 
 `users` and `ops` print the number of distinct values; with `list` as the first argument they print the values themselves, sorted, one per line, or `(none)` if nothing matches. `select` prints the matching records in file order, in the input CSV format with its header, followed by `N records` (just `0 records` if nothing matches).
 
-Run the tests with `go vet ./... && go test ./...`.
-
 ### Scripting
 
 `--query` runs one command, in exactly the prompt's syntax, prints the result and exits; `--file -` reads the log from standard input (and so needs `--query`, since the prompt also reads standard input):
 
 ```
-go run . --query "count op=upload AND size>50"                     # 140
-cat server_log.csv | go run . --file - --query "users list"        # one username per line
-go run . --query "select user=jeff22 AND date=2020-04-15" | cut -d, -f1
+./logminer --query "count op=upload AND size>50"                     # 140
+cat server_log.csv | ./logminer --file - --query "users list"        # one username per line
+./logminer --query "select user=jeff22 AND date=2020-04-15" | cut -d, -f1
 ```
 
 Query mode prints only the result, so it can feed other tools: no banner, prompt or load summary; `users list` and `ops list` print nothing (not `(none)`) when empty; `select` prints the CSV header and the matching records without the `N records` footer, so its output is valid CSV (just the header if nothing matches). Errors print `error: ...` and the same help text as the prompt to standard error, with nothing on standard output.
 
-Exit codes: `0` success; `1` a bad query, or a log that cannot be read or parsed; `2` a usage error (an unknown flag, an empty `--query`, or `--file -` without `--query`).
+Exit codes: `0` success; `1` a bad query, or a log that cannot be read or parsed; `2` a usage error (an unknown flag, an empty `--query`, or `--file -` without `--query`). `go run` reports every non-zero exit as `1`, so use the built binary when a script needs to tell them apart.
 
 ### Line editing and history
 
 The standard library has no readline, so the prompt itself is plain `bufio` input with no arrow-key editing or history. To get both without changing the code or adding a dependency, wrap the program with `rlwrap`:
 
 ```
-rlwrap go run .
+rlwrap ./logminer
 ```
 
 ## Design

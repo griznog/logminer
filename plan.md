@@ -14,6 +14,7 @@ It should also handle combinations of these. Graded on clean, documented, effici
 Load once into memory as `[]Event`, then answer each query with a single filtered pass. A query is a boolean expression compiled into one `query.Filter` (`func(Event) bool`).
 
 Layout (`go mod init logmetrics`):
+- `Makefile`: `build` (to `./logminer`), `test` (vet + tests) and `clean`.
 - `main.go`: `-file` flag (default `server_log.csv`, `-` for stdin), load the log, start the REPL; `-query` runs one command through the shared `repl.Exec` (quiet output, errors to stderr, exit codes 0/1/2) for scripting.
 - `internal/logparse/`: `Event{Time, User, Op, SizeKB}`, `Parse(io.Reader)` using `encoding/csv` and `time.UnixDate`. Errors include line numbers.
 - `internal/query/`
