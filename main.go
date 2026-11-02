@@ -11,8 +11,8 @@ import (
 	"os"
 	"strings"
 
-	"logminer/internal/logparse"
-	"logminer/internal/repl"
+	"logmetrics/internal/logparse"
+	"logmetrics/internal/repl"
 )
 
 // Exit codes returned by run.
