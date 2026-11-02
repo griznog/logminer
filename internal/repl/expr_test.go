@@ -70,6 +70,7 @@ func TestSplitComparison(t *testing.T) {
 		{"size>", []string{"size", ">", ""}},
 		{"<size", []string{"", "<", "size"}},
 		{"2020-04-13<=date", []string{"2020-04-13", "<=", "date"}},
+		{"2020-04-15T09:00<=date<2020-04-15T17:00:00", []string{"2020-04-15T09:00", "<=", "date", "<", "2020-04-15T17:00:00"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {
@@ -103,6 +104,12 @@ func TestParseFiltersErrorKinds(t *testing.T) {
 		{"date>2020-04-15 AND date<2020-04-10", date},
 		{"(date>2020-04-15 AND date<2020-04-10) OR op=upload", date},
 		{"date=2020-02-30", date},
+		{"date>=2020-04-15T09:00 AND date<2020-04-15T17:00:00", ok},
+		{"2020-04-15T09:00 <= date < 2020-04-16", ok},
+		{"date>2020-04-15T10:00:00 AND date<2020-04-15T10:00:01", date},
+		{"date>=2020-04-15T25:00", date},
+		{"date>=2020-04-15T10", date},
+		{"date>=2020-04-15 10:00", date},
 		{"op=bogus", plain},
 		{"op=upload AND size>x", size},
 		{"45 <= size < 100", ok},

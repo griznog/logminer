@@ -32,11 +32,11 @@ func SizeOver(kb int) Filter {
 	return Size(Gt, kb)
 }
 
-// Cmp is a comparison operator used by Date and Size.
+// Cmp is a comparison operator used by Date, DateTime and Size.
 type Cmp int
 
-// Supported comparisons. Each compares an event's value (its calendar date or
-// its size) against a target: Lt means the event's value is strictly less
+// Supported comparisons. Each compares an event's value (its calendar date,
+// its instant or its size) against a target: Lt means the event's value is strictly less
 // than (for dates, before) the target, and so on.
 const (
 	// Eq accepts events equal to the target.
@@ -96,16 +96,53 @@ func compareInt(a, b int) int {
 // Gt excludes all of it. Out-of-range values are normalized as by time.Date.
 // An unknown cmp accepts nothing.
 func Date(cmp Cmp, year int, month time.Month, day int) Filter {
-	target := dayOf(year, month, day)
-	return func(ev logparse.Event) bool {
-		return cmp.compare(dayOf(ev.Time.Date()).Compare(target))
-	}
+	start := time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
+	target := interval{start, start.AddDate(0, 0, 1)}
+	return func(ev logparse.Event) bool { return target.match(cmp, wallClock(ev.Time)) }
 }
 
-// dayOf returns midnight UTC on the given date, a zone-free key for
-// comparing calendar days.
-func dayOf(year int, month time.Month, day int) time.Time {
-	return time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
+// DateTime returns a Filter that compares each event's instant against the
+// whole second starting at t using cmp: Eq accepts events within that second,
+// Lt events before it, Le events before its end, Gt events after its end and
+// Ge events from its start. Log timestamps have whole-second resolution, so
+// for them this is an exact comparison with t. The comparison is between
+// instants, so the time zones of t and the event do not matter. An unknown
+// cmp accepts nothing.
+func DateTime(cmp Cmp, t time.Time) Filter {
+	target := interval{t, t.Add(time.Second)}
+	return func(ev logparse.Event) bool { return target.match(cmp, ev.Time) }
+}
+
+// wallClock returns t's wall-clock date and time in its own zone, relabelled
+// as UTC: a zone-free key for comparing calendar days.
+func wallClock(t time.Time) time.Time {
+	y, mo, d := t.Date()
+	h, mi, s := t.Clock()
+	return time.Date(y, mo, d, h, mi, s, t.Nanosecond(), time.UTC)
+}
+
+// interval is the half-open time span [start, end) that a Date or DateTime
+// target denotes: a whole day or a whole second.
+type interval struct{ start, end time.Time }
+
+// match reports whether t satisfies cmp against the interval: Eq means t is
+// inside it, Lt before its start, Le before its end, Gt at or after its end
+// and Ge at or after its start. An unknown cmp is never satisfied.
+func (iv interval) match(cmp Cmp, t time.Time) bool {
+	switch cmp {
+	case Eq:
+		return !t.Before(iv.start) && t.Before(iv.end)
+	case Lt:
+		return t.Before(iv.start)
+	case Le:
+		return t.Before(iv.end)
+	case Gt:
+		return !t.Before(iv.end)
+	case Ge:
+		return !t.Before(iv.start)
+	default:
+		return false
+	}
 }
 
 // OnDate returns a Filter that accepts events that occurred on the given

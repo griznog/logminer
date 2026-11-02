@@ -33,7 +33,7 @@ With no expression, every event matches. Filter terms:
   user=<name>          events by the named user (case-sensitive)
   op=<operation>       upload or download
   size<op>N            size in kB; <op> is =, <, <=, > or >=; see below
-  date<op>YYYY-MM-DD   <op> is =, <, <=, > or >=; see below
+  date<op>D            D is YYYY-MM-DD or YYYY-MM-DDTHH:MM[:SS]; see below
   45 <= size < 100     chained comparison on size or date; see below
 
 ` + logicHelpText + `
@@ -48,6 +48,7 @@ More examples:
   count date>=2020-04-13 AND date<=2020-04-15
   count 45 <= size < 100
   select 2020-04-13 <= date <= 2020-04-15 AND op=upload
+  count 2020-04-15T09:00 <= date < 2020-04-15T17:00
   select user=jeff22 AND date=2020-04-15
 `
 
@@ -68,14 +69,23 @@ Examples:
 
 // dateHelpText explains the date filter syntax. It is part of helpText and is
 // also printed after any date filter error.
-const dateHelpText = `Date filters compare calendar days (YYYY-MM-DD) in the log's own time zone:
+const dateHelpText = `Date filters take a day, YYYY-MM-DD, or a time, YYYY-MM-DDTHH:MM or
+YYYY-MM-DDTHH:MM:SS (with the T, no space), all in UTC, the log's time zone.
+A day means the whole calendar day:
   date=D    on day D
   date<D    before day D (D excluded)     date<=D   on or before D (D included)
   date>D    after day D (D excluded)      date>=D   on or after D (D included)
+A time is an exact second (HH:MM means HH:MM:00):
+  date=T    at second T
+  date<T    before T (T excluded)         date<=T   at or before T (T included)
+  date>T    after T (T excluded)          date>=T   at or after T (T included)
 Date terms joined by AND make a range:
   date>=2020-04-13 AND date<=2020-04-15    Apr 13 through Apr 15, inclusive
   2020-04-13 <= date <= 2020-04-15         the same range, chained
-Date terms ANDed together that no day can satisfy are rejected as an error.
+  2020-04-15T09:00 <= date < 2020-04-15T17:00
+                                           Apr 15, 09:00:00 through 16:59:59
+Date terms ANDed together that no whole second can satisfy are rejected as an
+error, e.g. date>2020-04-15T10:00:00 AND date<2020-04-15T10:00:01.
 `
 
 // sizeHelpText explains the size filter syntax. It is part of helpText and is

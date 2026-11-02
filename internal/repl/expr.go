@@ -20,10 +20,11 @@ import (
 //	expr := and { OR and }
 //	and  := not { AND not }
 //	not  := NOT not | '(' expr ')' | term
-//	term := user=<name> | op=<operation> | size<op>N | date<op>YYYY-MM-DD
+//	term := user=<name> | op=<operation> | size<op>N | date<op>D
 //	      | V <op> size | V <op> size <op> V | V <op> date | V <op> date <op> V
 //
-// where <op> is =, <, <=, > or >=. A chained comparison such as
+// where <op> is =, <, <=, > or >= and D is a date literal, YYYY-MM-DD for a
+// whole day or YYYY-MM-DDTHH:MM[:SS] for one second, in UTC. A chained comparison such as
 // "45 <= size < 100" means "size>=45 AND size<100"; its operators must both be
 // one of <, <=, > and >= and point the same way. Spaces around comparison
 // operators are optional. Keywords are case-insensitive. Adjacent operands
@@ -240,6 +241,9 @@ func (p *parser) parseAnd() (node, error) {
 			break
 		}
 		if !isKeyword(tok, "AND") {
+			if d, ok := spacedDateTime(p.prev(), tok); ok {
+				return nil, dateErrorf("invalid date %q: join the date and time with T, as in %s", d+" "+tok, d+"T"+tok)
+			}
 			return nil, syntaxErrorf("missing AND/OR between %q and %q: an operator is required between filters", p.prev(), tok)
 		}
 		p.pos++
@@ -251,6 +255,22 @@ func (p *parser) parseAnd() (node, error) {
 		return nil, err
 	}
 	return ops, nil
+}
+
+// spacedDateTime reports whether prev, a term ending in a YYYY-MM-DD date, and
+// tok, a time of day, look like a date and time separated by a space, as in
+// "date>=2020-04-15 10:00". It returns the date part of prev.
+func spacedDateTime(prev, tok string) (string, bool) {
+	if len(prev) < len(time.DateOnly) {
+		return "", false
+	}
+	d := prev[len(prev)-len(time.DateOnly):]
+	if _, err := time.Parse(time.DateOnly, d); err != nil {
+		return "", false
+	}
+	_, err1 := time.Parse("15:04", tok)
+	_, err2 := time.Parse("15:04:05", tok)
+	return d, err1 == nil || err2 == nil
 }
 
 // parseNot parses: NOT not | '(' expr ')' | term.
@@ -385,7 +405,10 @@ func parseFieldTerm(term string) (leaf, error) {
 		if err != nil {
 			return leaf{}, err
 		}
-		y, m, d := dt.day.Date()
+		if dt.lit.hasTime {
+			return leaf{f: query.DateTime(dt.cmp, dt.lit.start), date: &dt}, nil
+		}
+		y, m, d := dt.lit.start.Date()
 		return leaf{f: query.Date(dt.cmp, y, m, d), date: &dt}, nil
 	}
 	if rest, ok := strings.CutPrefix(term, "size"); ok && rest != "" && isCmpChar(rest[0]) {
@@ -431,9 +454,47 @@ var cmpOps = []struct {
 
 // dateTerm is a parsed date filter term.
 type dateTerm struct {
-	term string    // the term as written, for error messages
-	cmp  query.Cmp // comparison against day
-	day  time.Time // midnight UTC on the target day
+	term string      // the term as written, for error messages
+	cmp  query.Cmp   // comparison against lit
+	lit  dateLiteral // the target day or second
+}
+
+// dateLiteral is a parsed date value: a whole UTC day for YYYY-MM-DD, or a
+// whole UTC second for YYYY-MM-DDTHH:MM[:SS]. Either way it denotes the
+// half-open span [start, end).
+type dateLiteral struct {
+	start, end time.Time
+	hasTime    bool // the literal gave a time of day, so the span is one second
+}
+
+// dateLayouts are the accepted date literal forms, all read as UTC. The time
+// forms need the "T" so that the literal stays a single word.
+var dateLayouts = []struct {
+	layout  string
+	hasTime bool
+}{
+	{time.DateOnly, false},
+	{"2006-01-02T15:04", true},
+	{"2006-01-02T15:04:05", true},
+}
+
+// parseDateLiteral parses v as YYYY-MM-DD, YYYY-MM-DDTHH:MM or
+// YYYY-MM-DDTHH:MM:SS. Errors are *dateError values.
+func parseDateLiteral(v string) (dateLiteral, error) {
+	for _, l := range dateLayouts {
+		// time.Parse without a zone yields UTC, the zone of the log. The
+		// length check rejects the fractional seconds time.Parse would
+		// otherwise accept after the seconds field.
+		t, err := time.Parse(l.layout, v)
+		if err != nil || len(v) != len(l.layout) {
+			continue
+		}
+		if l.hasTime {
+			return dateLiteral{start: t, end: t.Add(time.Second), hasTime: true}, nil
+		}
+		return dateLiteral{start: t, end: t.AddDate(0, 0, 1)}, nil
+	}
+	return dateLiteral{}, dateErrorf("invalid date %q: want YYYY-MM-DD or YYYY-MM-DDTHH:MM[:SS]", v)
 }
 
 // parseDate parses one date term, given in full as term and with the leading
@@ -444,12 +505,11 @@ func parseDate(term, rest string) (dateTerm, error) {
 		if !ok {
 			continue
 		}
-		// time.Parse yields midnight UTC, the same day key the bounds use.
-		day, err := time.Parse(time.DateOnly, v)
+		lit, err := parseDateLiteral(v)
 		if err != nil {
-			return dateTerm{}, dateErrorf("invalid date %q: want YYYY-MM-DD", v)
+			return dateTerm{}, err
 		}
-		return dateTerm{term: term, cmp: o.cmp, day: day}, nil
+		return dateTerm{term: term, cmp: o.cmp, lit: lit}, nil
 	}
 	return dateTerm{}, dateErrorf("unknown date operator in %q: want =, <, <=, > or >=", term)
 }
@@ -479,7 +539,7 @@ func parseSize(term, rest string) (sizeTerm, error) {
 }
 
 // checkRange returns a *dateError if the date terms among the operands of one
-// AND chain cannot all hold on any single day, or a *sizeError if its size
+// AND chain cannot all hold at any single second, or a *sizeError if its size
 // terms cannot all hold for any whole number of kB. Only direct leaves count:
 // a term under NOT or inside an OR does not narrow the chain.
 func checkRange(ops andNode) error {
@@ -496,7 +556,7 @@ func checkRange(ops andNode) error {
 		}
 	}
 	if dr.empty() {
-		return dateErrorf("empty date range: no day satisfies %s", strings.Join(dr.terms, " AND "))
+		return dateErrorf("empty date range: no moment satisfies %s", strings.Join(dr.terms, " AND "))
 	}
 	if sr.empty() {
 		return sizeErrorf("empty size range: no size satisfies %s", strings.Join(sr.terms, " AND "))
@@ -559,10 +619,11 @@ func (r *sizeRange) empty() bool {
 	return r.none || r.hasLo && r.hasHi && r.lo > r.hi
 }
 
-// dateRange accumulates the inclusive day bounds implied by the date terms of
-// one AND chain, so that contradictory terms can be rejected.
+// dateRange accumulates the inclusive whole-second bounds implied by the date
+// terms of one AND chain, so that contradictory terms can be rejected. A day
+// literal spans its first through last second; a time literal is one second.
 type dateRange struct {
-	lo, hi       time.Time // inclusive bounds, midnight UTC; valid if hasLo/hasHi
+	lo, hi       time.Time // inclusive bounds, whole UTC seconds; valid if hasLo/hasHi
 	hasLo, hasHi bool
 	terms        []string // the date terms seen, for error messages
 }
@@ -570,36 +631,37 @@ type dateRange struct {
 // add narrows the range by one date term.
 func (r *dateRange) add(dt dateTerm) {
 	r.terms = append(r.terms, dt.term)
+	first, last := dt.lit.start, dt.lit.end.Add(-time.Second)
 	switch dt.cmp {
 	case query.Eq:
-		r.raiseLo(dt.day)
-		r.lowerHi(dt.day)
+		r.raiseLo(first)
+		r.lowerHi(last)
 	case query.Lt:
-		r.lowerHi(dt.day.AddDate(0, 0, -1))
+		r.lowerHi(first.Add(-time.Second))
 	case query.Le:
-		r.lowerHi(dt.day)
+		r.lowerHi(last)
 	case query.Gt:
-		r.raiseLo(dt.day.AddDate(0, 0, 1))
+		r.raiseLo(last.Add(time.Second))
 	case query.Ge:
-		r.raiseLo(dt.day)
+		r.raiseLo(first)
 	}
 }
 
-// raiseLo tightens the lower bound to day if that is later.
-func (r *dateRange) raiseLo(day time.Time) {
-	if !r.hasLo || day.After(r.lo) {
-		r.lo, r.hasLo = day, true
+// raiseLo tightens the lower bound to t if that is later.
+func (r *dateRange) raiseLo(t time.Time) {
+	if !r.hasLo || t.After(r.lo) {
+		r.lo, r.hasLo = t, true
 	}
 }
 
-// lowerHi tightens the upper bound to day if that is earlier.
-func (r *dateRange) lowerHi(day time.Time) {
-	if !r.hasHi || day.Before(r.hi) {
-		r.hi, r.hasHi = day, true
+// lowerHi tightens the upper bound to t if that is earlier.
+func (r *dateRange) lowerHi(t time.Time) {
+	if !r.hasHi || t.Before(r.hi) {
+		r.hi, r.hasHi = t, true
 	}
 }
 
-// empty reports whether no day satisfies every date term seen.
+// empty reports whether no whole second satisfies every date term seen.
 func (r *dateRange) empty() bool {
 	return r.hasLo && r.hasHi && r.lo.After(r.hi)
 }

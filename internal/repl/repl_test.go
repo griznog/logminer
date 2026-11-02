@@ -43,7 +43,7 @@ func TestRun(t *testing.T) {
 		{"unknown command", "frob\ncount\n", "error: unknown command \"frob\" (type \"help\" for usage)\n6\n\n"},
 		{"bad op", "count op=delete\n", "error: invalid op \"delete\": want upload or download\n\n"},
 		{"bad size", "count size>abc\n", "error: invalid size \"abc\": want an integer number of kB\n" + sizeHelpText + "\n"},
-		{"bad date", "count date=04/15/2020\n", "error: invalid date \"04/15/2020\": want YYYY-MM-DD\n" + dateHelpText + "\n"},
+		{"bad date", "count date=04/15/2020\n", "error: invalid date \"04/15/2020\": want YYYY-MM-DD or YYYY-MM-DDTHH:MM[:SS]\n" + dateHelpText + "\n"},
 		{"unknown filter key", "users color=red\n", "error: unknown filter \"color\" (type \"help\" for usage)\n\n"},
 		{"malformed term", "users jeff22\n", "error: invalid filter \"jeff22\" (type \"help\" for usage)\n\n"},
 		{"empty user", "count user=\n", "error: empty user name in \"user=\"\n\n"},
@@ -84,7 +84,7 @@ func TestRun(t *testing.T) {
 		},
 		{"select none", "select user=nobody\n", "0 records\n\n"},
 		{"select bad filter", "select op=bogus\n", "error: invalid op \"bogus\": want upload or download\n\n"},
-		{"select bad date", "select date>=abc\n", "error: invalid date \"abc\": want YYYY-MM-DD\n" + dateHelpText + "\n"},
+		{"select bad date", "select date>=abc\n", "error: invalid date \"abc\": want YYYY-MM-DD or YYYY-MM-DDTHH:MM[:SS]\n" + dateHelpText + "\n"},
 		{"help", "help\nquit\n", helpText},
 		{"quit stops reading", "quit\ncount\n", ""},
 		{"EOF without newline", "count", "6\n\n"},
@@ -121,91 +121,133 @@ func TestRunDateErrors(t *testing.T) {
 		input string
 		err   string // expected error line, without "error: " or newline
 	}{
-		{"bad month and day", "count date>=2020-13-45", `invalid date "2020-13-45": want YYYY-MM-DD`},
-		{"not a date", "count date>=abc", `invalid date "abc": want YYYY-MM-DD`},
-		{"empty value", "count date<", `invalid date "": want YYYY-MM-DD`},
+		{"bad month and day", "count date>=2020-13-45", `invalid date "2020-13-45": want YYYY-MM-DD or YYYY-MM-DDTHH:MM[:SS]`},
+		{"not a date", "count date>=abc", `invalid date "abc": want YYYY-MM-DD or YYYY-MM-DDTHH:MM[:SS]`},
+		{"empty value", "count date<", `invalid date "": want YYYY-MM-DD or YYYY-MM-DDTHH:MM[:SS]`},
 		{"unknown operator", "count date!=2020-04-15", `unknown date operator in "date!=2020-04-15": want =, <, <=, > or >=`},
-		{"reversed operator", "count date=>2020-04-15", `invalid date ">2020-04-15": want YYYY-MM-DD`},
+		{"reversed operator", "count date=>2020-04-15", `invalid date ">2020-04-15": want YYYY-MM-DD or YYYY-MM-DDTHH:MM[:SS]`},
 		{
 			"disjoint range",
 			"count date>2020-04-15 AND date<2020-04-10",
-			"empty date range: no day satisfies date>2020-04-15 AND date<2020-04-10",
+			"empty date range: no moment satisfies date>2020-04-15 AND date<2020-04-10",
 		},
 		{
 			"touching exclusive bound",
 			"users date>2020-04-15 AND date<=2020-04-15",
-			"empty date range: no day satisfies date>2020-04-15 AND date<=2020-04-15",
+			"empty date range: no moment satisfies date>2020-04-15 AND date<=2020-04-15",
 		},
 		{
 			"two different days",
 			"select date=2020-04-10 AND date=2020-04-11",
-			"empty date range: no day satisfies date=2020-04-10 AND date=2020-04-11",
+			"empty date range: no moment satisfies date=2020-04-10 AND date=2020-04-11",
 		},
 		{
 			"adjacent exclusive bounds",
 			"count date>2020-04-14 AND date<2020-04-15 AND user=jeff22",
-			"empty date range: no day satisfies date>2020-04-14 AND date<2020-04-15",
+			"empty date range: no moment satisfies date>2020-04-14 AND date<2020-04-15",
 		},
 		// Each AND chain is checked on its own, at any depth.
 		{
 			"chain in parentheses under OR",
 			"count (date>2020-04-15 AND date<2020-04-10) OR op=upload",
-			"empty date range: no day satisfies date>2020-04-15 AND date<2020-04-10",
+			"empty date range: no moment satisfies date>2020-04-15 AND date<2020-04-10",
 		},
 		{
 			"chain in OR branch without parentheses",
 			"count op=upload OR date=2020-04-10 AND user=jeff22 AND date=2020-04-11",
-			"empty date range: no day satisfies date=2020-04-10 AND date=2020-04-11",
+			"empty date range: no moment satisfies date=2020-04-10 AND date=2020-04-11",
 		},
 		{
 			"chain under NOT",
 			"count NOT (date>2020-04-15 AND date<2020-04-10)",
-			"empty date range: no day satisfies date>2020-04-15 AND date<2020-04-10",
+			"empty date range: no moment satisfies date>2020-04-15 AND date<2020-04-10",
 		},
 		{
 			"nested AND groups are flattened",
 			"count date>2020-04-15 AND (op=upload AND date<2020-04-10)",
-			"empty date range: no day satisfies date>2020-04-15 AND date<2020-04-10",
+			"empty date range: no moment satisfies date>2020-04-15 AND date<2020-04-10",
 		},
 		{
 			"two AND groups are flattened",
 			"count (date>2020-04-15 AND op=upload) AND (user=jeff22 AND date<2020-04-10)",
-			"empty date range: no day satisfies date>2020-04-15 AND date<2020-04-10",
+			"empty date range: no moment satisfies date>2020-04-15 AND date<2020-04-10",
 		},
 		{
 			"deeply nested",
 			"count user=jeff22 OR (op=upload AND NOT (size>50 OR (date=2020-04-10 AND date>2020-04-10)))",
-			"empty date range: no day satisfies date=2020-04-10 AND date>2020-04-10",
+			"empty date range: no moment satisfies date=2020-04-10 AND date>2020-04-10",
 		},
 		{
 			"keywords case-insensitive",
 			"count date>2020-04-15 and date<2020-04-10",
-			"empty date range: no day satisfies date>2020-04-15 AND date<2020-04-10",
+			"empty date range: no moment satisfies date>2020-04-15 AND date<2020-04-10",
 		},
 		// Chained date comparisons are two date terms in one AND chain.
 		{
 			"chain disjoint",
 			"count 2020-04-15 < date < 2020-04-10",
-			"empty date range: no day satisfies date>2020-04-15 AND date<2020-04-10",
+			"empty date range: no moment satisfies date>2020-04-15 AND date<2020-04-10",
 		},
 		{
 			"chain adjacent exclusive bounds",
 			"count 2020-04-14<date<2020-04-15",
-			"empty date range: no day satisfies date>2020-04-14 AND date<2020-04-15",
+			"empty date range: no moment satisfies date>2020-04-14 AND date<2020-04-15",
 		},
 		{
 			"chain with explicit AND",
 			"count 2020-04-10 <= date <= 2020-04-20 AND date>2020-04-20",
-			"empty date range: no day satisfies date>=2020-04-10 AND date<=2020-04-20 AND date>2020-04-20",
+			"empty date range: no moment satisfies date>=2020-04-10 AND date<=2020-04-20 AND date>2020-04-20",
 		},
 		{
 			"chain under NOT",
 			"count NOT 2020-04-15 < date < 2020-04-10",
-			"empty date range: no day satisfies date>2020-04-15 AND date<2020-04-10",
+			"empty date range: no moment satisfies date>2020-04-15 AND date<2020-04-10",
 		},
-		{"chain bad literal", "count 2020-04-13 <= date < tomorrow", `invalid date "tomorrow": want YYYY-MM-DD`},
-		{"literal left bad date", "count abc < date", `invalid date "abc": want YYYY-MM-DD`},
-		{"bad date inside expression", "count op=upload AND (date>=abc OR user=x)", `invalid date "abc": want YYYY-MM-DD`},
+		{"chain bad literal", "count 2020-04-13 <= date < tomorrow", `invalid date "tomorrow": want YYYY-MM-DD or YYYY-MM-DDTHH:MM[:SS]`},
+		{"literal left bad date", "count abc < date", `invalid date "abc": want YYYY-MM-DD or YYYY-MM-DDTHH:MM[:SS]`},
+		{"bad date inside expression", "count op=upload AND (date>=abc OR user=x)", `invalid date "abc": want YYYY-MM-DD or YYYY-MM-DDTHH:MM[:SS]`},
+		// Time literals: the T form only, valid clock values, whole seconds.
+		{"hour out of range", "count date>=2020-04-15T25:00", `invalid date "2020-04-15T25:00": want YYYY-MM-DD or YYYY-MM-DDTHH:MM[:SS]`},
+		{"hour without minutes", "count date>=2020-04-15T10", `invalid date "2020-04-15T10": want YYYY-MM-DD or YYYY-MM-DDTHH:MM[:SS]`},
+		{"space instead of T", "count date>=2020-04-15 10:00", `invalid date "2020-04-15 10:00": join the date and time with T, as in 2020-04-15T10:00`},
+		{"space instead of T on the right", "count 2020-04-14 <= date < 2020-04-15 17:00:00", `invalid date "2020-04-15 17:00:00": join the date and time with T, as in 2020-04-15T17:00:00`},
+		{"fractional seconds", "count date=2020-04-15T10:00:00.5", `invalid date "2020-04-15T10:00:00.5": want YYYY-MM-DD or YYYY-MM-DDTHH:MM[:SS]`},
+		{"time chain bad literal", "count 2020-04-15T09:00 <= date < 2020-04-15T24:00", `invalid date "2020-04-15T24:00": want YYYY-MM-DD or YYYY-MM-DDTHH:MM[:SS]`},
+		{
+			"no whole second between times",
+			"count date>2020-04-15T10:00:00 AND date<2020-04-15T10:00:01",
+			"empty date range: no moment satisfies date>2020-04-15T10:00:00 AND date<2020-04-15T10:00:01",
+		},
+		{
+			"exclusive time bounds on the same second",
+			"count date>=2020-04-15T10:00 AND date<2020-04-15T10:00",
+			"empty date range: no moment satisfies date>=2020-04-15T10:00 AND date<2020-04-15T10:00",
+		},
+		{
+			"two different seconds",
+			"count date=2020-04-15T10:00:00 AND date=2020-04-15T10:00:01",
+			"empty date range: no moment satisfies date=2020-04-15T10:00:00 AND date=2020-04-15T10:00:01",
+		},
+		{
+			"time chain reversed",
+			"count 2020-04-15T17:00 < date < 2020-04-15T09:00",
+			"empty date range: no moment satisfies date>2020-04-15T17:00 AND date<2020-04-15T09:00",
+		},
+		{
+			"time after the day",
+			"count date=2020-04-15 AND date>2020-04-15T23:59:59",
+			"empty date range: no moment satisfies date=2020-04-15 AND date>2020-04-15T23:59:59",
+		},
+		{
+			"time before the day",
+			"count date>=2020-04-15 AND date<2020-04-15T00:00",
+			"empty date range: no moment satisfies date>=2020-04-15 AND date<2020-04-15T00:00",
+		},
+		{
+			"mixed chain day before time",
+			"count 2020-04-15 < date <= 2020-04-15T23:59:59",
+			"empty date range: no moment satisfies date>2020-04-15 AND date<=2020-04-15T23:59:59",
+		},
 		{"bad date under NOT", "count NOT date!2020-04-15", `unknown date operator in "date!2020-04-15": want =, <, <=, > or >=`},
 	}
 	for _, tt := range tests {
@@ -461,6 +503,28 @@ func TestRunComparisons(t *testing.T) {
 		{"date literal left", "count 2020-04-15 < date", "1"},
 		{"date spaced", "count date >= 2020-04-15", "5"},
 		{"date and size chains", "count 2020-04-15 <= date <= 2020-04-15 AND 50 <= size < 70", "2"},
+		// Time literals are exact UTC seconds. testEvents times: Apr 15 at
+		// 01:00, 02:00, 03:00 and 04:00, Apr 16 at 01:00, Apr 14 at 05:00.
+		{"time eq", "count date=2020-04-15T02:00", "1"},
+		{"time eq with seconds", "count date=2020-04-15T02:00:00", "1"},
+		{"time eq no event that second", "count date=2020-04-15T02:00:01", "0"},
+		{"time lt", "count date<2020-04-15T02:00", "2"},
+		{"time le", "count date<=2020-04-15T02:00", "3"},
+		{"time gt", "count date>2020-04-15T02:00", "3"},
+		{"time ge", "count date>=2020-04-15T02:00", "4"},
+		{"time gt one second before", "count date>2020-04-15T01:59:59", "4"},
+		{"time lt one second after", "count date<2020-04-15T02:00:01", "3"},
+		{"time le last second of day", "count date<=2020-04-15T23:59:59", "5"},
+		{"time spaced", "count date >= 2020-04-15T02:00", "4"},
+		{"time literal left", "count 2020-04-15T03:00 < date", "2"},
+		{"time chain", "count 2020-04-15T02:00 <= date < 2020-04-15T04:00", "2"},
+		{"time chain joined descending", "count 2020-04-15T04:00>=date>2020-04-15T01:00", "3"},
+		{"time chain single second", "count 2020-04-15T02:00 <= date <= 2020-04-15T02:00:00", "1"},
+		{"time chain AND", "count 2020-04-15T00:00 <= date < 2020-04-15T03:00 AND op=upload", "2"},
+		{"mixed chain time then day", "count 2020-04-15T03:00 <= date <= 2020-04-16", "3"},
+		{"mixed chain day then time", "count 2020-04-14 < date < 2020-04-15T03:00", "2"},
+		{"mixed AND", "count date=2020-04-15 AND date>=2020-04-15T03:00", "2"},
+		{"time or", "count date<2020-04-15T02:00 OR date>2020-04-15T03:00", "4"},
 		// Ranges are only combined within one AND chain.
 		{"disjoint chains under OR", "count 100 < size OR size < 45", "1"},
 		{"chain under NOT not a bound", "count NOT (50 <= size < 70) AND size=60", "0"},
@@ -488,6 +552,8 @@ func TestRunChainsMatchExplicitAnd(t *testing.T) {
 		{"60 >= size > 10", "size<=60 AND size>10"},
 		{"50 < size", "size>50"},
 		{"2020-04-14 <= date < 2020-04-16", "date>=2020-04-14 AND date<2020-04-16"},
+		{"2020-04-15T02:00 <= date < 2020-04-16", "date>=2020-04-15T02:00 AND date<2020-04-16"},
+		{"2020-04-15T04:00:00 > date >= 2020-04-15T01:00", "date<2020-04-15T04:00 AND date>=2020-04-15T01:00:00"},
 		{"NOT (45 <= size < 100) OR op=download", "NOT (size>=45 AND size<100) OR op=download"},
 	}
 	run := func(expr string) string {
@@ -501,6 +567,51 @@ func TestRunChainsMatchExplicitAnd(t *testing.T) {
 		t.Run(p[0], func(t *testing.T) {
 			if got, want := run(p[0]), run(p[1]); got != want {
 				t.Errorf("select %s = %q, want %q (from %s)", p[0], got, want, p[1])
+			}
+		})
+	}
+}
+
+// TestRunTimeQueries runs time-of-day queries against the real log. Expected
+// values were computed independently with shell tools (field 3 is the day of
+// the month, field 4 the time; every event is in Apr 2020 UTC):
+//
+//	awk -F'[, ]' 'NR>1 && $3==15 && $4>="09:00:00" && $4<="16:59:59"' server_log.csv | wc -l  # 15
+//	awk -F'[, ]' 'NR>1 && ($3>15 || ($3==15 && $4>="12:00:00"))' server_log.csv | wc -l       # 532
+//	awk -F'[, ]' 'NR>1 && $3==15 && $4=="14:13:00"' server_log.csv | wc -l                    # 1
+//	awk -F'[, ]' 'NR>1 && $3==15 && $4>"14:13:00"' server_log.csv | wc -l                     # 22
+//	awk -F'[, ]' 'NR>1 && $3==15 && $4>="12:00:00" && $7=="jeff22" && $8=="upload"' server_log.csv | wc -l  # 2
+//	awk -F'[, ]' 'NR>1 && $3==15' server_log.csv | wc -l                                      # 48
+func TestRunTimeQueries(t *testing.T) {
+	f, err := os.Open("../../server_log.csv")
+	if err != nil {
+		t.Fatalf("open log: %v", err)
+	}
+	defer f.Close()
+	events, err := logparse.Parse(f)
+	if err != nil {
+		t.Fatalf("parse log: %v", err)
+	}
+	tests := []struct {
+		expr string
+		want string
+	}{
+		{"2020-04-15T09:00 <= date < 2020-04-15T17:00", "15"},
+		{"date>=2020-04-15T12:00:00", "532"},
+		{"date=2020-04-15T14:13:00", "1"},
+		{"date=2020-04-15 AND date>2020-04-15T14:13", "22"},
+		{"user=jeff22 AND op=upload AND 2020-04-15T12:00 <= date < 2020-04-16", "2"},
+		{"date=2020-04-15", "48"},
+		{"2020-04-15T00:00 <= date <= 2020-04-15T23:59:59", "48"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.expr, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := Exec(&out, events, "count "+tt.expr, Options{}); err != nil {
+				t.Fatalf("Exec returned error: %v", err)
+			}
+			if got, want := out.String(), tt.want+"\n"; got != want {
+				t.Errorf("count %s = %q, want %q", tt.expr, got, want)
 			}
 		})
 	}
@@ -628,7 +739,7 @@ func TestExecErrors(t *testing.T) {
 		{"unknown command", "frob", "error: unknown command \"frob\" (type \"help\" for usage)\n", ""},
 		{"plain error", "count op=bogus", "error: invalid op \"bogus\": want upload or download\n", ""},
 		{"syntax error", "count op=upload size>50", "", logicHelpText},
-		{"date error", "count date=04/15/2020", "error: invalid date \"04/15/2020\": want YYYY-MM-DD\n", dateHelpText},
+		{"date error", "count date=04/15/2020", "error: invalid date \"04/15/2020\": want YYYY-MM-DD or YYYY-MM-DDTHH:MM[:SS]\n", dateHelpText},
 		{"size error", "count size>abc", "error: invalid size \"abc\": want an integer number of kB\n", sizeHelpText},
 	}
 	for _, tt := range tests {
