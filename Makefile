@@ -1,4 +1,4 @@
-BINARY := logmetrics
+BINARY := logminer
 
 .PHONY: build test clean
 

@@ -1,4 +1,4 @@
-// Command logmetrics loads a server access log and answers questions about it,
+// Command logminer loads a server access log and answers questions about it,
 // either through an interactive prompt or, with -query, one command at a time
 // for use in scripts.
 package main
@@ -11,8 +11,8 @@ import (
 	"os"
 	"strings"
 
-	"logmetrics/internal/logparse"
-	"logmetrics/internal/repl"
+	"logminer/internal/logparse"
+	"logminer/internal/repl"
 )
 
 // Exit codes returned by run.
@@ -33,7 +33,7 @@ func main() {
 // a single -query or starts the interactive prompt on stdin. Results go to
 // stdout; errors and usage messages go to stderr. It returns the exit code.
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("logmetrics", flag.ContinueOnError)
+	fs := flag.NewFlagSet("logminer", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	path := fs.String("file", "server_log.csv", `path to the CSV server log, or "-" for standard input (requires -query)`)
 	q := fs.String("query", "", `run one command (same syntax as the prompt, e.g. "count op=upload"), print the result and exit`)
@@ -45,7 +45,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	usage := func(msg string) int {
-		fmt.Fprintln(stderr, "logmetrics:", msg)
+		fmt.Fprintln(stderr, "logminer:", msg)
 		fs.Usage()
 		return exitUsage
 	}
@@ -62,7 +62,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	events, err := load(*path, stdin)
 	if err != nil {
-		fmt.Fprintln(stderr, "logmetrics:", err)
+		fmt.Fprintln(stderr, "logminer:", err)
 		return exitError
 	}
 
@@ -76,7 +76,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	fmt.Fprintf(stdout, "Loaded %d events from %s. Type \"help\" for commands.\n", len(events), *path)
 	if err := repl.Run(stdin, stdout, events); err != nil {
-		fmt.Fprintln(stderr, "logmetrics:", err)
+		fmt.Fprintln(stderr, "logminer:", err)
 		return exitError
 	}
 	return exitOK
